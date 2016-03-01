@@ -1,0 +1,153 @@
+--- linux-3.2.4/drivers/net/wireless/ath/ath5k/base.c	2015-08-25 20:08:09.000000000 +0800
++++ base.c	2016-03-01 13:04:08.584567763 +0800
+@@ -57,7 +57,7 @@
+ #include <net/ieee80211_radiotap.h>
+ 
+ #include <asm/unaligned.h>
+-
++#include <linux/proc_fs.h>
+ #include "base.h"
+ #include "reg.h"
+ #include "debug.h"
+@@ -186,6 +186,53 @@
+ 	/* XR missing */
+ };
+ 
++//yxy
++static struct proc_dir_entry *proc_entry;
++
++static struct recv_rssi {
++	int signal;
++	u8 mac_addr[6];
++};
++static struct recv_rssi r_rssi;
++
++static ssize_t proc_read_siglv(char *page, char **start, off_t off, 
++		int count, int *eof, void *data)
++{
++	int len = 0;
++	if (off > 0) {
++		*eof = 1;
++		return 0;
++	}
++
++	len = sizeof(struct recv_rssi);
++	memcpy(page, (char *)&r_rssi, len);	
++	
++	return len;
++}
++
++static int proc_init(void)
++{
++	proc_entry = create_proc_entry("ath5k_rssi", 444, NULL);
++	if(proc_entry == NULL) {
++		printk(KERN_INFO "Couldn't create ath5k_rssi proc entry\n");
++		goto err;
++	}
++	else {
++		proc_entry->read_proc = proc_read_siglv;
++	}
++	printk(KERN_INFO "ddddddddddddddddddddddddd\n");
++	return 0;
++	err:
++	return -ENOMEM;
++}
++
++static void proc_exit(void)
++{
++	remove_proc_entry("ath5k_rssi", NULL);
++}
++
++
++
+ static inline u64 ath5k_extend_tsf(struct ath5k_hw *ah, u32 rstamp)
+ {
+ 	u64 tsf = ath5k_hw_get_tsf64(ah);
+@@ -1217,11 +1264,39 @@
+ 	}
+ }
+ 
++static int
++ath5k_build_recv_rssi(struct sk_buff *skb)
++{
++	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
++	int i;
++
++	if(memcmp(r_rssi.mac_addr, mgmt->sa, 6) == 0)
++		return 0;
++	for(i = 0; i < 6; ++i) {
++		r_rssi.mac_addr[i] = mgmt->sa[i];
++	}
++	printk(KERN_INFO "tx mac addr = %x:%x:%x:%x:%x:%x \n", 
++			r_rssi.mac_addr[0], r_rssi.mac_addr[1], r_rssi.mac_addr[2],
++			r_rssi.mac_addr[3], r_rssi.mac_addr[4], r_rssi.mac_addr[5]
++			);
++
++	return 0;
++}
++
+ static void
+ ath5k_update_beacon_rssi(struct ath5k_hw *ah, struct sk_buff *skb, int rssi)
+ {
+-	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
+-	struct ath_common *common = ath5k_hw_common(ah);
++	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data; //received
++	struct ath_common *common = ath5k_hw_common(ah); //local
++
++//	printk(KERN_INFO "tx mac = %x:%x:%x:%x:%x:%x \n", 
++//			mgmt->sa[0], mgmt->sa[1], mgmt->sa[2],
++//			mgmt->sa[3], mgmt->sa[4], mgmt->sa[5]
++//			);
++//	printk(KERN_INFO "local mac = %x:%x:%x:%x:%x:%x \n",
++//			common->macaddr[0],common->macaddr[1],common->macaddr[2],
++//			common->macaddr[3],common->macaddr[4],common->macaddr[5]
++//			);
+ 
+ 	/* only beacons from our BSSID */
+ 	if (!ieee80211_is_beacon(mgmt->frame_control) ||
+@@ -1229,7 +1304,6 @@
+ 		return;
+ 
+ 	ewma_add(&ah->ah_beacon_rssi_avg, rssi);
+-
+ 	/* in IBSS mode we should keep RSSI statistics per neighbour */
+ 	/* le16_to_cpu(mgmt->u.beacon.capab_info) & WLAN_CAPABILITY_IBSS */
+ }
+@@ -1340,9 +1414,14 @@
+ 
+ 	rxs->freq = ah->curchan->center_freq;
+ 	rxs->band = ah->curchan->band;
+-
++	
++	//signal level (dBm)
+ 	rxs->signal = ah->ah_noise_floor + rs->rs_rssi;
+ 
++//	printk(KERN_DEBUG "rxs->signal = %d\n", rxs->signal);
++	r_rssi.signal = rxs->signal;
++	ath5k_build_recv_rssi(skb);
++
+ 	rxs->antenna = rs->rs_antenna;
+ 
+ 	if (rs->rs_antenna > 0 && rs->rs_antenna < 5)
+@@ -2347,6 +2426,11 @@
+ 	struct ath_common *common;
+ 	int ret;
+ 	int csz;
++	
++	if(proc_init() == 0)
++		printk(KERN_INFO "Create ath5k_rssi proc successfully\n");
++	
++	printk(KERN_DEBUG "insmod ath5k in %s\n", __func__);
+ 
+ 	/* Initialize driver private data */
+ 	SET_IEEE80211_DEV(hw, ah->dev);
+@@ -2898,6 +2982,9 @@
+ {
+ 	struct ieee80211_hw *hw = ah->hw;
+ 
++	proc_exit();
++	printk(KERN_DEBUG "rmmod ath5k in %s\n", __func__);
++
+ 	/*
+ 	 * NB: the order of these is important:
+ 	 * o call the 802.11 layer before detaching ath5k_hw to
